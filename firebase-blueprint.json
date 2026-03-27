@@ -2,7 +2,7 @@
   "entities": {
     "User": {
       "title": "User",
-      "description": "App user profile",
+      "description": "User profile information.",
       "type": "object",
       "properties": {
         "uid": { "type": "string" },
@@ -13,9 +13,9 @@
       },
       "required": ["uid", "email"]
     },
-    "FruitCollection": {
-      "title": "Fruit Collection",
-      "description": "User's identified fruit collection",
+    "FruitEntry": {
+      "title": "FruitEntry",
+      "description": "A fruit entry in the user's collection (identified via camera).",
       "type": "object",
       "properties": {
         "userId": { "type": "string" },
@@ -37,16 +37,31 @@
         "timestamp": { "type": "string", "format": "date-time" }
       },
       "required": ["userId", "fruitName", "imageUrl", "timestamp"]
+    },
+    "FavoriteFruit": {
+      "title": "FavoriteFruit",
+      "description": "A fruit favorited by the user.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "fruitName": { "type": "string" },
+        "timestamp": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "fruitName", "timestamp"]
     }
   },
   "firestore": {
     "/users/{userId}": {
       "schema": "User",
-      "description": "User profile documents"
+      "description": "User profiles."
     },
-    "/users/{userId}/collection/{itemId}": {
-      "schema": "FruitCollection",
-      "description": "Individual fruit entries in user's collection"
+    "/users/{userId}/collection/{entryId}": {
+      "schema": "FruitEntry",
+      "description": "User's identified fruits."
+    },
+    "/users/{userId}/favorites/{favoriteId}": {
+      "schema": "FavoriteFruit",
+      "description": "User's favorite fruits."
     }
   }
 }

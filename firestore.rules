@@ -2,28 +2,35 @@
 // Assumed Data Model
 // ===============================================================
 //
-// Collection: /users/{userId}
-// Document ID: userId
+// Collection: users
+// Document ID: {userId}
 // Fields:
 //   - uid: string (required) - User's unique ID
 //   - email: string (required) - User's email
 //   - displayName: string (optional) - User's display name
-//   - photoURL: string (optional) - User's profile picture URL
+//   - photoURL: string (optional) - User's photo URL
 //   - createdAt: timestamp (required) - Account creation time
 //
-// Collection: /users/{userId}/collection/{itemId}
-// Document ID: itemId (auto-generated)
+// Collection: users/{userId}/collection
+// Document ID: {entryId}
 // Fields:
 //   - userId: string (required) - Owner's UID
 //   - fruitName: string (required) - Name of the fruit
-//   - scientificName: string (optional) - Latin name
-//   - family: string (optional) - Botanical family
-//   - origin: string (optional) - Geographical origin
-//   - nutrition: map (optional) - Nutritional data
-//   - funFact: string (optional) - Trivia
-//   - season: string (optional) - Harvest season
-//   - imageUrl: string (required) - URL of the uploaded image
+//   - scientificName: string (optional) - Scientific name
+//   - family: string (optional) - Fruit family
+//   - origin: string (optional) - Origin country
+//   - nutrition: map (optional) - Nutritional info
+//   - funFact: string (optional) - Interesting fact
+//   - season: string (optional) - Maturation season
+//   - imageUrl: string (required) - Image URL
 //   - timestamp: timestamp (required) - Identification time
+//
+// Collection: users/{userId}/favorites
+// Document ID: {favoriteId}
+// Fields:
+//   - userId: string (required) - Owner's UID
+//   - fruitName: string (required) - Name of the fruit
+//   - timestamp: timestamp (required) - Favorite time
 //
 // ===============================================================
 
@@ -34,7 +41,7 @@ service cloud.firestore {
     // ===============================================================
     // Helper Functions
     // ===============================================================
-    
+
     function isAuthenticated() {
       return request.auth != null;
     }
@@ -49,18 +56,36 @@ service cloud.firestore {
           (request.auth.token.email == "zechengxu10@gmail.com" && request.auth.token.email_verified == true));
     }
 
+    function isValidEmail(email) {
+      return email is string && email.matches("^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$");
+    }
+
+    function hasOnlyAllowedFields(fields) {
+      return request.resource.data.keys().hasOnly(fields);
+    }
+
+    // ===============================================================
+    // Domain Validators
+    // ===============================================================
+
     function isValidUser(data) {
-      return data.keys().hasAll(['uid', 'email']) &&
-             data.uid is string &&
-             data.email is string &&
-             data.email.size() < 255;
+      return data.uid is string &&
+             isValidEmail(data.email) &&
+             (data.displayName == null || data.displayName is string) &&
+             (data.photoURL == null || data.photoURL is string) &&
+             data.createdAt is timestamp;
     }
 
     function isValidFruitEntry(data) {
-      return data.keys().hasAll(['userId', 'fruitName', 'imageUrl', 'timestamp']) &&
-             data.userId == request.auth.uid &&
-             data.fruitName is string && data.fruitName.size() < 100 &&
-             data.imageUrl is string && data.imageUrl.size() < 2000 &&
+      return data.userId == request.auth.uid &&
+             data.fruitName is string && data.fruitName.size() > 0 &&
+             data.imageUrl is string &&
+             data.timestamp is timestamp;
+    }
+
+    function isValidFavorite(data) {
+      return data.userId == request.auth.uid &&
+             data.fruitName is string && data.fruitName.size() > 0 &&
              data.timestamp is timestamp;
     }
 
@@ -70,17 +95,28 @@ service cloud.firestore {
 
     match /users/{userId} {
       allow read: if isOwner(userId) || isAdmin();
-      allow create: if isOwner(userId) && isValidUser(request.resource.data);
-      allow update: if isOwner(userId) && isValidUser(request.resource.data) && 
-                    request.resource.data.uid == resource.data.uid;
+      allow create: if isAuthenticated() && isValidUser(request.resource.data) && (isOwner(userId) || isAdmin());
+      allow update: if isAuthenticated() && isValidUser(request.resource.data) && (isOwner(userId) || isAdmin());
+      allow delete: if isAdmin();
 
-      match /collection/{itemId} {
+      match /collection/{entryId} {
         allow read: if isOwner(userId) || isAdmin();
         allow create: if isOwner(userId) && isValidFruitEntry(request.resource.data);
-        allow update: if isOwner(userId) && isValidFruitEntry(request.resource.data) &&
-                      request.resource.data.userId == resource.data.userId;
-        allow delete: if isOwner(userId);
+        allow update: if isOwner(userId) && isValidFruitEntry(request.resource.data);
+        allow delete: if isOwner(userId) || isAdmin();
       }
+
+      match /favorites/{favoriteId} {
+        allow read: if isOwner(userId) || isAdmin();
+        allow create: if isOwner(userId) && isValidFavorite(request.resource.data);
+        allow update: if isOwner(userId) && isValidFavorite(request.resource.data);
+        allow delete: if isOwner(userId) || isAdmin();
+      }
+    }
+
+    // Default deny
+    match /{document=**} {
+      allow read, write: if false;
     }
   }
 }

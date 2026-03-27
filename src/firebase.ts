@@ -112,6 +112,13 @@ export interface FruitEntry {
   timestamp: Timestamp;
 }
 
+export interface FavoriteEntry {
+  id?: string;
+  userId: string;
+  fruitName: string;
+  timestamp: Timestamp;
+}
+
 export const saveFruitToCollection = async (userId: string, entry: Omit<FruitEntry, 'id' | 'userId' | 'timestamp'>) => {
   const path = `users/${userId}/collection`;
   try {
@@ -132,5 +139,32 @@ export const deleteFruitFromCollection = async (userId: string, itemId: string) 
     await deleteDoc(doc(db, path));
   } catch (error) {
     handleFirestoreError(error, OperationType.DELETE, path);
+  }
+};
+
+export const toggleFavoriteFruit = async (userId: string, fruitName: string, isFavorite: boolean) => {
+  const path = `users/${userId}/favorites`;
+  try {
+    if (isFavorite) {
+      // Add to favorites
+      const q = query(collection(db, path), where('fruitName', '==', fruitName));
+      const snapshot = await getDocs(q);
+      if (snapshot.empty) {
+        await addDoc(collection(db, path), {
+          userId,
+          fruitName,
+          timestamp: Timestamp.now()
+        });
+      }
+    } else {
+      // Remove from favorites
+      const q = query(collection(db, path), where('fruitName', '==', fruitName));
+      const snapshot = await getDocs(q);
+      snapshot.forEach(async (document) => {
+        await deleteDoc(doc(db, `users/${userId}/favorites/${document.id}`));
+      });
+    }
+  } catch (error) {
+    handleFirestoreError(error, isFavorite ? OperationType.CREATE : OperationType.DELETE, path);
   }
 };

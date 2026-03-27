@@ -41,7 +41,9 @@ import {
   logout, 
   saveFruitToCollection, 
   deleteFruitFromCollection,
+  toggleFavoriteFruit,
   FruitEntry,
+  FavoriteEntry,
   handleFirestoreError,
   OperationType
 } from './firebase';
@@ -137,6 +139,7 @@ export default function App() {
   };
 
   const [fruitCollection, setFruitCollection] = useState<CollectionItem[]>([]);
+  const [favoriteFruits, setFavoriteFruits] = useState<string[]>([]);
   const [isIdentifying, setIsIdentifying] = useState(false);
   const [isCameraOpen, setIsCameraOpen] = useState(false);
   const [capturedImage, setCapturedImage] = useState<string | null>(null);
@@ -145,6 +148,7 @@ export default function App() {
   const [selectedItem, setSelectedItem] = useState<CollectionItem | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [isUserMenuOpen, setIsUserMenuOpen] = useState(false);
+  const [collectionTab, setCollectionTab] = useState<'identified' | 'favorites'>('identified');
   const [encyclopediaSearch, setEncyclopediaSearch] = useState('');
   const [activeFruit, setActiveFruit] = useState<any>(null);
   useEffect(() => {
@@ -218,6 +222,38 @@ export default function App() {
     return () => unsubscribe();
   }, [user]);
 
+  // --- Sync Favorites ---
+  useEffect(() => {
+    if (!user) {
+      setFavoriteFruits([]);
+      return;
+    }
+
+    const path = `users/${user.uid}/favorites`;
+    const q = query(collection(db, path));
+    
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const names = snapshot.docs.map(doc => (doc.data() as FavoriteEntry).fruitName);
+      setFavoriteFruits(names);
+    }, (error) => {
+      handleFirestoreError(error, OperationType.GET, path);
+    });
+    return () => unsubscribe();
+  }, [user]);
+
+  const handleFavoriteToggle = async (e: React.MouseEvent, fruit: any) => {
+    e.stopPropagation();
+    console.log('handleFavoriteToggle called for:', fruit.name);
+    if (!user) {
+      // If not logged in, trigger sign in
+      signInWithGoogle();
+      return;
+    }
+
+    const isFavorite = favoriteFruits.includes(fruit.name);
+    await toggleFavoriteFruit(user.uid, fruit.name, !isFavorite);
+  };
+
   // --- Camera & AI Logic ---
   const startCamera = async () => {
     setIsCameraOpen(true);
@@ -258,12 +294,30 @@ export default function App() {
     if (videoRef.current && canvasRef.current) {
       const video = videoRef.current;
       const canvas = canvasRef.current;
-      canvas.width = video.videoWidth;
-      canvas.height = video.videoHeight;
+      
+      // Cap resolution for faster processing
+      const maxDim = 1024;
+      let width = video.videoWidth;
+      let height = video.videoHeight;
+      
+      if (width > height) {
+        if (width > maxDim) {
+          height *= maxDim / width;
+          width = maxDim;
+        }
+      } else {
+        if (height > maxDim) {
+          width *= maxDim / height;
+          height = maxDim;
+        }
+      }
+      
+      canvas.width = width;
+      canvas.height = height;
       const ctx = canvas.getContext('2d');
       if (ctx) {
-        ctx.drawImage(video, 0, 0);
-        const imageData = canvas.toDataURL('image/jpeg');
+        ctx.drawImage(video, 0, 0, width, height);
+        const imageData = canvas.toDataURL('image/jpeg', 0.7);
         setCapturedImage(imageData);
         stopCamera();
         identifyFruit(imageData);
@@ -278,55 +332,48 @@ export default function App() {
     startCamera();
   };
 
+  const [loadingMessage, setLoadingMessage] = useState('AI 正在深度解析中...');
+
+  useEffect(() => {
+    if (isIdentifying) {
+      const messages = [
+        'AI 正在深度解析中...',
+        '正在识别水果种类...',
+        '正在检索营养成分...',
+        '正在生成趣味百科...',
+        '即将完成，请稍候...'
+      ];
+      let i = 0;
+      const interval = setInterval(() => {
+        i = (i + 1) % messages.length;
+        setLoadingMessage(messages[i]);
+      }, 2000);
+      return () => clearInterval(interval);
+    }
+  }, [isIdentifying]);
+
   const identifyFruit = async (base64Image: string) => {
     setIsIdentifying(true);
     setError(null);
     
     try {
-      const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY! });
-      
-      const prompt = "Identify the fruit in this image. Return a JSON object with the following fields: name (Chinese name), scientificName, family, origin, nutrition (object with calories, vitamins (array), minerals (array)), funFact, season.";
-      
-      const imagePart = {
-        inlineData: {
-          data: base64Image.split(',')[1],
-          mimeType: "image/jpeg",
+      const response = await fetch('/api/identify', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
         },
-      };
-
-      const result = await ai.models.generateContent({
-        model: "gemini-3-flash-preview",
-        contents: [{ parts: [{ text: prompt }, imagePart] }],
-        config: {
-          responseMimeType: "application/json",
-          responseSchema: {
-            type: Type.OBJECT,
-            properties: {
-              name: { type: Type.STRING },
-              scientificName: { type: Type.STRING },
-              family: { type: Type.STRING },
-              origin: { type: Type.STRING },
-              nutrition: {
-                type: Type.OBJECT,
-                properties: {
-                  calories: { type: Type.STRING },
-                  vitamins: { type: Type.ARRAY, items: { type: Type.STRING } },
-                  minerals: { type: Type.ARRAY, items: { type: Type.STRING } },
-                },
-                required: ["calories", "vitamins", "minerals"],
-              },
-              funFact: { type: Type.STRING },
-              season: { type: Type.STRING },
-            },
-            required: ["name", "scientificName", "family", "origin", "nutrition", "funFact", "season"],
-          },
-        },
+        body: JSON.stringify({ base64Image }),
       });
 
-      const fruitData = JSON.parse(result.text || '{}');
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || '识别失败');
+      }
+
+      const fruitData = await response.json();
       setIdentifiedFruit(fruitData);
-    } catch (err) {
-      setError('识别失败，请重试。');
+    } catch (err: any) {
+      setError(err.message || '未能认出这是什么水果 🤔 试试靠近一点，或者换个明亮的背景再拍一张？');
       console.error('Identification error:', err);
     } finally {
       setIsIdentifying(false);
@@ -334,7 +381,11 @@ export default function App() {
   };
 
   const addToCollection = async () => {
-    if (!user || !identifiedFruit || !capturedImage) return;
+    if (!user) {
+      signInWithGoogle();
+      return;
+    }
+    if (!identifiedFruit || !capturedImage) return;
     
     try {
       await saveFruitToCollection(user.uid, {
@@ -359,6 +410,31 @@ export default function App() {
     item.fruit.family.toLowerCase().includes(searchQuery.toLowerCase())
   );
 
+  const favoriteItems = useMemo(() => {
+    return COMMON_FRUITS.filter(fruit => favoriteFruits.includes(fruit.name)).map(fruit => ({
+      id: `fav-${fruit.name}`,
+      fruit: {
+        name: fruit.name,
+        scientificName: fruit.scientificName || '',
+        family: fruit.family || '',
+        origin: fruit.origin || '',
+        nutrition: {
+          calories: fruit.kcal.toString(),
+          vitamins: [],
+          minerals: []
+        },
+        funFact: (fruit as any).description || '',
+        season: fruit.season || ''
+      },
+      image: fruit.image,
+      date: '收藏于 ' + new Date().toLocaleDateString()
+    }));
+  }, [favoriteFruits]);
+
+  const displayCollection = collectionTab === 'identified' ? filteredCollection : favoriteItems.filter(item => 
+    item.fruit.name.toLowerCase().includes(searchQuery.toLowerCase())
+  );
+
   const filteredEncyclopedia = COMMON_FRUITS.filter(fruit => 
     fruit.name.toLowerCase().includes(encyclopediaSearch.toLowerCase()) ||
     fruit.scientificName.toLowerCase().includes(encyclopediaSearch.toLowerCase()) ||
@@ -372,77 +448,98 @@ export default function App() {
   return (
     <div className="min-h-screen bg-nm-bg text-nm-ink selection:bg-nm-accent selection:text-white pb-20 relative">
       {/* Header */}
-      <nav className="fixed top-0 left-0 right-0 z-50 px-6 py-6 pointer-events-none">
-        <div className="max-w-7xl mx-auto px-6 py-3 rounded-[24px] bg-white/40 backdrop-blur-xl shadow-nm-flat flex items-center justify-between border border-white/60 pointer-events-auto">
-          <div className="flex items-center gap-6">
+      <motion.nav 
+        style={{ y: useTransform(ropeY, [0, 80], [0, 50]) }}
+        className="fixed top-0 left-0 right-0 z-50 px-6 py-6 pointer-events-none select-none"
+      >
+        <div className="max-w-7xl mx-auto px-6 py-3 rounded-[24px] bg-white/40 backdrop-blur-xl shadow-nm-flat flex items-center justify-between border border-white/60 pointer-events-auto relative">
+          {/* Left: Logo */}
+          <div className="flex items-center gap-6 relative">
             <div className="flex items-center gap-2">
-              <Apple size={24} className="text-nm-accent" />
+              <Apple size={18} className="text-nm-accent" />
               <span className="text-xl font-display font-extrabold tracking-tighter">FruitDex</span>
-            </div>
-            
-            <div className="flex items-center gap-4">
-              {user ? (
-                <div className="relative">
-                  <button 
-                    onClick={() => setIsUserMenuOpen(!isUserMenuOpen)}
-                    className="flex items-center gap-2 p-1 rounded-full hover:bg-white/20 transition-colors"
-                  >
-                    <img src={user.photoURL || ''} className="w-8 h-8 rounded-full shadow-nm-sm border-2 border-white/40" alt="Profile" referrerPolicy="no-referrer" />
-                  </button>
-                  
-                  <AnimatePresence>
-                    {isUserMenuOpen && (
-                      <motion.div
-                        initial={{ opacity: 0, y: 10, scale: 0.95 }}
-                        animate={{ opacity: 1, y: 0, scale: 1 }}
-                        exit={{ opacity: 0, y: 10, scale: 0.95 }}
-                        className="absolute left-0 mt-3 w-56 rounded-3xl bg-nm-bg shadow-nm-flat border border-white/40 overflow-hidden z-[60]"
-                      >
-                        <div className="p-5 border-b border-nm-ink/5">
-                          <p className="text-sm font-bold text-nm-ink truncate">{user.displayName}</p>
-                          <p className="text-[10px] text-nm-muted truncate">{user.email}</p>
-                        </div>
-                        <div className="p-2">
-                          <button 
-                            onClick={() => {
-                              logout();
-                              setIsUserMenuOpen(false);
-                            }}
-                            className="w-full p-3 text-left text-xs text-red-500 hover:bg-red-500/10 rounded-2xl transition-colors flex items-center gap-2"
-                          >
-                            <X size={14} /> 退出登录
-                          </button>
-                        </div>
-                      </motion.div>
-                    )}
-                  </AnimatePresence>
-                </div>
-              ) : (
-                <Button onClick={signInWithGoogle} className="!px-4 !py-2 text-xs">登录</Button>
-              )}
-              <IconButton className="!w-10 !h-10 !shadow-none !bg-transparent">
-                <History size={18} />
-              </IconButton>
             </div>
           </div>
           
+          {/* Center: Search */}
           <div className="hidden md:flex flex-1 max-w-sm mx-10">
             <div className="bg-nm-bg rounded-2xl shadow-[inset_4px_4px_7px_rgba(163,177,198,0.6),inset_-4px_-4px_7px_rgba(255,255,255,0.5)] !p-0 flex items-center px-4 w-full">
               <Search size={16} className="text-nm-muted ml-3" />
               <input 
                 type="text" 
                 placeholder="搜索百科全书..." 
+                aria-label="搜索百科全书"
                 className="w-full bg-transparent border-none focus:ring-0 py-2 px-3 text-xs"
                 value={encyclopediaSearch}
                 onChange={(e) => setEncyclopediaSearch(e.target.value)}
               />
             </div>
           </div>
+
+          {/* Right: Login/History */}
+          <div className="flex items-center gap-4 relative ml-auto md:ml-0">
+            {user ? (
+              <div className="relative">
+                <button 
+                  onClick={() => setIsUserMenuOpen(!isUserMenuOpen)}
+                  aria-label="用户菜单"
+                  className="flex items-center gap-2 p-1 rounded-full hover:bg-white/20 transition-colors"
+                >
+                  <img src={user.photoURL || ''} className="w-8 h-8 rounded-full shadow-nm-sm border-2 border-white/40" alt="Profile" referrerPolicy="no-referrer" />
+                </button>
+                
+                <AnimatePresence>
+                  {isUserMenuOpen && (
+                    <motion.div
+                      initial={{ opacity: 0, y: 10, scale: 0.95 }}
+                      animate={{ opacity: 1, y: 0, scale: 1 }}
+                      exit={{ opacity: 0, y: 10, scale: 0.95 }}
+                      className="absolute right-0 mt-3 w-56 rounded-3xl bg-nm-bg shadow-nm-flat border border-white/40 overflow-hidden z-[60]"
+                    >
+                      <div className="p-5 border-b border-nm-ink/5">
+                        <p className="text-sm font-bold text-nm-ink truncate">{user.displayName}</p>
+                        <p className="text-[10px] text-nm-muted truncate">{user.email}</p>
+                      </div>
+                      <div className="p-2">
+                        <button 
+                          onClick={() => {
+                            logout();
+                            setIsUserMenuOpen(false);
+                          }}
+                          aria-label="退出登录"
+                          className="w-full p-3 text-left text-xs text-red-500 hover:bg-red-500/10 rounded-2xl transition-colors flex items-center gap-2"
+                        >
+                          <X size={14} /> 退出登录
+                        </button>
+                      </div>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+              </div>
+            ) : (
+              <Button onClick={signInWithGoogle} className="!px-4 !py-2 text-xs !shadow-nm-sm">登录</Button>
+            )}
+            <IconButton aria-label="历史记录" className="!w-10 !h-10 !shadow-none !bg-transparent">
+              <History size={18} />
+            </IconButton>
+          </div>
         </div>
-      </nav>
+      </motion.nav>
+      
+      {/* Pull Rope below Nav */}
+      <motion.div 
+        style={{ y: useTransform(ropeY, [0, 80], [0, 50]) }}
+        className="fixed top-[91px] left-0 right-0 z-40 pointer-events-none hidden md:block"
+      >
+        <div className="max-w-7xl mx-auto px-6 relative">
+          <div className="absolute left-6 ml-6 pl-5 pointer-events-auto">
+            <PullRope dragY={ropeY} onTrigger={triggerJackpot} />
+          </div>
+        </div>
+      </motion.div>
 
       {/* Hero Section */}
-      <section className="relative pt-[188px] px-6 pb-12 overflow-hidden min-h-[600px] flex items-center justify-center">
+      <section className="relative pt-[120px] md:pt-[188px] px-6 pb-12 overflow-hidden min-h-[500px] md:min-h-[600px] flex items-center justify-center">
         <FruitNinja />
         <div className="max-w-7xl mx-auto relative z-10 pointer-events-none">
           <div className="flex flex-col items-center text-center mb-16 pointer-events-auto">
@@ -454,7 +551,7 @@ export default function App() {
             >
               <motion.div
                 style={{ y: cardY, scale: cardScale }}
-                className="max-w-2xl bg-nm-bg/80 backdrop-blur-sm p-8 rounded-3xl shadow-[0_0_40px_rgba(0,0,0,0.05)] relative"
+                className="max-w-2xl p-8 relative select-none"
               >
                 <h1 className="text-3xl md:text-5xl font-display font-extrabold tracking-tighter mb-6 leading-[0.95]">
                   <span className="font-serif italic font-medium tracking-normal">Discover Nature,</span><br />
@@ -468,10 +565,10 @@ export default function App() {
                   <Button 
                     variant="primary" 
                     className="!px-8 !py-3 text-base shadow-nm-flat"
-                    onClick={() => user ? startCamera() : signInWithGoogle()}
+                    onClick={startCamera}
                   >
                     <Scan size={20} />
-                    {user ? '拍照识果' : '登录开启识别'}
+                    拍照识果
                   </Button>
                   <Button 
                     className="!px-8 !py-3 text-base"
@@ -485,9 +582,6 @@ export default function App() {
                   </Button>
                 </div>
               </motion.div>
-              <div className="absolute -left-32 top-0">
-                <PullRope dragY={ropeY} onTrigger={triggerJackpot} />
-              </div>
             </motion.div>
           </div>
 
@@ -525,53 +619,61 @@ export default function App() {
               </div>
             </div>
           </motion.div>
+        </div>
+      </section>
 
-          {/* Scrolling Common Fruits */}
-          <div className="mt-32">
-            <div className="max-w-7xl mx-auto px-6">
-            <div className="flex items-center gap-4 mb-8">
-              <div className="h-8 w-1.5 bg-nm-accent rounded-full" />
-              <h2 className="text-3xl font-display font-extrabold tracking-tighter flex items-baseline gap-3">
-                每日水果推荐 <span className="text-nm-muted text-sm font-normal tracking-normal">({currentSeason}时令)</span>
+      {/* Scrolling Common Fruits Section */}
+      <section className="px-6 py-24 md:py-32 border-t border-nm-ink/5">
+        <div className="max-w-7xl mx-auto">
+          <div className="flex flex-col gap-4 mb-12">
+            <div className="flex items-center gap-3 md:gap-4">
+              <div className="h-6 md:h-8 w-1.5 bg-nm-accent rounded-full shrink-0" />
+              <h2 className="text-xl sm:text-2xl md:text-4xl lg:text-5xl font-display font-extrabold tracking-tighter">
+                每日水果推荐 <span className="inline-block text-nm-muted text-xs md:text-sm font-normal tracking-normal">({currentSeason}时令)</span>
               </h2>
             </div>
+          </div>
+          
+          <div className={`relative w-full overflow-hidden py-12 marquee-container ${isWallPaused ? 'marquee-paused' : ''} ${hoveredFruit ? 'has-hovered-fruit' : ''}`}>
+            <div 
+              className={`flex gap-10 animate-marquee whitespace-nowrap ${encyclopediaSearch ? '[animation-play-state:paused]' : ''}`}
+              style={{ animationDuration: `${(encyclopediaSearch ? filteredEncyclopedia.length : recommendedFruits.length * 3) * 5}s` }}
+            >
+              {(encyclopediaSearch ? filteredEncyclopedia : [...recommendedFruits, ...recommendedFruits, ...recommendedFruits]).map((fruit, idx) => (
+                <FruitCard 
+                  key={idx}
+                  fruit={fruit}
+                  isActive={activeFruit?.name === fruit.name}
+                  isHovered={hoveredFruit?.name === fruit.name}
+                  isFavorite={favoriteFruits.includes(fruit.name)}
+                  onFavoriteToggle={(e) => handleFavoriteToggle(e, fruit)}
+                  onMouseEnter={() => {
+                    console.log('Hovering fruit:', fruit.name);
+                    setHoveredFruit(fruit);
+                    setIsWallPaused(true);
+                  }}
+                  onMouseLeave={() => {
+                    console.log('Leaving fruit:', fruit.name);
+                    setHoveredFruit(null);
+                    setIsWallPaused(false);
+                  }}
+                  onClick={(e) => {
+                    console.log('Fruit card clicked:', fruit.name);
+                    e.stopPropagation();
+                    setActiveFruit(fruit);
+                    setIsWallPaused(true);
+                    setTimeout(() => {
+                      console.log('Scrolling to encyclopedia');
+                      encyclopediaRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                    }, 100);
+                  }}
+                />
+              ))}
             </div>
             
-            <div className={`relative w-full overflow-hidden py-12 marquee-container ${isWallPaused ? 'marquee-paused' : ''} ${hoveredFruit ? 'has-hovered-fruit' : ''}`}>
-              <div 
-                className={`flex gap-10 animate-marquee whitespace-nowrap ${encyclopediaSearch ? '[animation-play-state:paused]' : ''}`}
-                style={{ animationDuration: `${(encyclopediaSearch ? filteredEncyclopedia.length : recommendedFruits.length * 3) * 5}s` }}
-              >
-                {(encyclopediaSearch ? filteredEncyclopedia : [...recommendedFruits, ...recommendedFruits, ...recommendedFruits]).map((fruit, idx) => (
-                  <FruitCard 
-                    key={idx}
-                    fruit={fruit}
-                    isActive={activeFruit?.name === fruit.name}
-                    isHovered={hoveredFruit?.name === fruit.name}
-                    onMouseEnter={() => {
-                      setHoveredFruit(fruit);
-                      setIsWallPaused(true);
-                    }}
-                    onMouseLeave={() => {
-                      setHoveredFruit(null);
-                      setIsWallPaused(false);
-                    }}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setActiveFruit(fruit);
-                      setIsWallPaused(true);
-                      setTimeout(() => {
-                        encyclopediaRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-                      }, 100);
-                    }}
-                  />
-                ))}
-              </div>
-              
-              {/* Gradient Overlays for smooth fade within the container */}
-              <div className="absolute inset-y-0 left-0 w-32 bg-gradient-to-r from-nm-bg to-transparent z-10 pointer-events-none" />
-              <div className="absolute inset-y-0 right-0 w-32 bg-gradient-to-l from-nm-bg to-transparent z-10 pointer-events-none" />
-            </div>
+            {/* Gradient Overlays for smooth fade within the container */}
+            <div className="absolute inset-y-0 left-0 w-12 md:w-32 bg-gradient-to-r from-nm-bg to-transparent z-10 pointer-events-none" />
+            <div className="absolute inset-y-0 right-0 w-12 md:w-32 bg-gradient-to-l from-nm-bg to-transparent z-10 pointer-events-none" />
           </div>
         </div>
       </section>
@@ -580,16 +682,32 @@ export default function App() {
       <section className="px-6 py-32 border-t border-nm-ink/5">
         <div className="max-w-7xl mx-auto">
           <div className="flex flex-col md:flex-row md:items-center justify-between gap-6 mb-16">
-            <div className="flex items-center gap-4">
-              <div className="h-8 w-1.5 bg-nm-accent rounded-full" />
-              <h2 className="text-3xl font-display font-extrabold tracking-tighter">我的收集库</h2>
+            <div className="flex flex-col gap-4">
+              <div className="flex items-center gap-3 md:gap-4">
+                <div className="h-6 md:h-8 w-1.5 bg-nm-accent rounded-full shrink-0" />
+                <h2 className="text-xl sm:text-2xl md:text-4xl lg:text-5xl font-display font-extrabold tracking-tighter">我的探索</h2>
+              </div>
+              <div className="flex gap-2 p-1 rounded-2xl bg-nm-bg shadow-nm-inset w-fit">
+                <button 
+                  onClick={() => setCollectionTab('identified')}
+                  className={`px-6 py-2 rounded-xl text-sm font-bold transition-all ${collectionTab === 'identified' ? 'bg-white shadow-nm-sm text-nm-accent' : 'text-nm-muted hover:text-nm-ink'}`}
+                >
+                  我的收集
+                </button>
+                <button 
+                  onClick={() => setCollectionTab('favorites')}
+                  className={`px-6 py-2 rounded-xl text-sm font-bold transition-all ${collectionTab === 'favorites' ? 'bg-white shadow-nm-sm text-nm-accent' : 'text-nm-muted hover:text-nm-ink'}`}
+                >
+                  我的收藏
+                </button>
+              </div>
             </div>
             <div className="relative flex-1 max-w-md">
               <InsetContainer className="!p-0 flex items-center px-4">
                 <Search size={18} className="text-nm-muted ml-3" />
                 <input 
                   type="text" 
-                  placeholder="搜索我的收藏..." 
+                  placeholder={collectionTab === 'identified' ? "搜索我的收集..." : "搜索我的收藏..."} 
                   className="w-full bg-transparent border-none focus:ring-0 py-3 px-3 text-sm"
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
@@ -599,14 +717,14 @@ export default function App() {
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-10">
-            {filteredCollection.length > 0 ? filteredCollection.map((item) => (
+            {displayCollection.length > 0 ? displayCollection.map((item) => (
               <motion.div
                 key={item.id}
                 layoutId={item.id}
                 initial={{ opacity: 0, scale: 0.9 }}
                 animate={{ opacity: 1, scale: 1 }}
                 className="group"
-                onClick={() => setSelectedItem(item)}
+                onClick={() => setSelectedItem(item as any)}
               >
                 <Card className="overflow-hidden !p-0 border border-white/20 cursor-pointer h-full">
                   <div className="relative aspect-[4/3] overflow-hidden">
@@ -671,7 +789,7 @@ export default function App() {
             <div className="w-full max-w-2xl flex flex-col gap-6">
               <div className="flex justify-between items-center">
                 <h3 className="text-2xl font-bold">识别水果</h3>
-                <IconButton onClick={closeCamera}><X size={24} /></IconButton>
+                <IconButton aria-label="关闭摄像头" onClick={closeCamera}><X size={24} /></IconButton>
               </div>
 
               <div className="relative aspect-square md:aspect-video rounded-[32px] overflow-hidden bg-black shadow-nm-inset border-4 border-white/20">
@@ -689,7 +807,7 @@ export default function App() {
                 {isIdentifying && (
                   <div className="absolute inset-0 flex flex-col items-center justify-center text-white">
                     <Loader2 className="animate-spin mb-4 drop-shadow-lg" size={48} />
-                    <p className="font-medium drop-shadow-lg">AI 正在深度解析中...</p>
+                    <p className="font-medium drop-shadow-lg">{loadingMessage}</p>
                   </div>
                 )}
 
@@ -745,7 +863,7 @@ export default function App() {
 
                     <div className="flex gap-4">
                       <Button variant="primary" className="flex-1" onClick={addToCollection}>
-                        加入收集库
+                        {user ? '加入收集库' : '登录以保存'}
                       </Button>
                       <Button className="flex-1" onClick={retakePhoto}>
                         重新拍照
@@ -821,7 +939,7 @@ export default function App() {
                 <Button variant="primary" className="flex-1">
                   分享百科 <Share2 size={18} />
                 </Button>
-                <IconButton><Heart size={20} /></IconButton>
+                <IconButton aria-label="收藏"><Heart size={20} /></IconButton>
               </div>
             </div>
           </div>
@@ -849,7 +967,7 @@ export default function App() {
           {/* Row 1 */}
           <div 
             className={`flex gap-10 animate-marquee whitespace-nowrap cursor-pointer ${hoveredFruit ? 'has-hovered-fruit' : ''}`}
-            style={{ animationDuration: `${shuffledRows.row1.length * 2 * 5}s` }}
+            style={{ animationDuration: `${shuffledRows.row1.length * 2 * 5 + 3}s` }}
           >
             {[...shuffledRows.row1, ...shuffledRows.row1].map((fruit, i) => (
               <FruitCard 
@@ -857,6 +975,8 @@ export default function App() {
                 fruit={fruit}
                 isActive={activeFruit?.name === fruit.name}
                 isHovered={hoveredFruit?.name === fruit.name}
+                isFavorite={favoriteFruits.includes(fruit.name)}
+                onFavoriteToggle={(e) => handleFavoriteToggle(e, fruit)}
                 onMouseEnter={() => {
                   setHoveredFruit(fruit);
                   setIsWallPaused(true);
@@ -879,7 +999,7 @@ export default function App() {
           {/* Row 2 */}
           <div 
             className={`flex gap-10 animate-marquee-reverse whitespace-nowrap cursor-pointer ${hoveredFruit ? 'has-hovered-fruit' : ''}`}
-            style={{ animationDuration: `${shuffledRows.row2.length * 2 * 5}s` }}
+            style={{ animationDuration: `${shuffledRows.row2.length * 2 * 5 + 3}s` }}
           >
             {[...shuffledRows.row2, ...shuffledRows.row2].map((fruit, i) => (
               <FruitCard 
@@ -887,6 +1007,8 @@ export default function App() {
                 fruit={fruit}
                 isActive={activeFruit?.name === fruit.name}
                 isHovered={hoveredFruit?.name === fruit.name}
+                isFavorite={favoriteFruits.includes(fruit.name)}
+                onFavoriteToggle={(e) => handleFavoriteToggle(e, fruit)}
                 onMouseEnter={() => {
                   setHoveredFruit(fruit);
                   setIsWallPaused(true);
@@ -909,7 +1031,7 @@ export default function App() {
           {/* Row 3 */}
           <div 
             className={`flex gap-10 animate-marquee whitespace-nowrap cursor-pointer ${hoveredFruit ? 'has-hovered-fruit' : ''}`}
-            style={{ animationDuration: `${shuffledRows.row3.length * 2 * 5}s` }}
+            style={{ animationDuration: `${shuffledRows.row3.length * 2 * 5 + 3}s` }}
           >
             {[...shuffledRows.row3, ...shuffledRows.row3].map((fruit, i) => (
               <FruitCard 
@@ -917,6 +1039,8 @@ export default function App() {
                 fruit={fruit}
                 isActive={activeFruit?.name === fruit.name}
                 isHovered={hoveredFruit?.name === fruit.name}
+                isFavorite={favoriteFruits.includes(fruit.name)}
+                onFavoriteToggle={(e) => handleFavoriteToggle(e, fruit)}
                 onMouseEnter={() => {
                   setHoveredFruit(fruit);
                   setIsWallPaused(true);
@@ -942,9 +1066,9 @@ export default function App() {
       {/* Footer Info / Encyclopedia Detail */}
       <footer className="px-6 py-24 border-t border-nm-ink/5 bg-white/20">
         <div className="max-w-6xl mx-auto mb-20" ref={encyclopediaRef}>
-          <div className="mb-12 flex items-center gap-4">
-            <div className="h-8 w-1.5 bg-nm-accent rounded-full" />
-            <h2 className="text-3xl font-display font-extrabold tracking-tighter">水果百科详情</h2>
+          <div className="mb-12 flex items-center gap-3 md:gap-4">
+            <div className="h-6 md:h-8 w-1.5 bg-nm-accent rounded-full shrink-0" />
+            <h2 className="text-xl sm:text-2xl md:text-4xl lg:text-5xl font-display font-extrabold tracking-tighter">水果百科详情</h2>
           </div>
 
           {activeFruit && (

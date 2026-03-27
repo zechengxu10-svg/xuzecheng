@@ -116,24 +116,34 @@ export const FruitNinja: React.FC = () => {
 
     // --- Jackpot Event ---
     const handleJackpot = () => {
-      const count = Math.floor(Math.random() * 2) + 6; // 6 to 7 fruits
-      for (let i = 0; i < count; i++) {
-        const type = FRUIT_TYPES[Math.floor(Math.random() * FRUIT_TYPES.length)];
-        fruits.push({
-          id: fruitIdCounter++,
-          x: canvas.width * 0.2 + Math.random() * canvas.width * 0.6,
-          y: -50 - Math.random() * 100, // Spawn above screen, staggered
-          vx: (Math.random() - 0.5) * 4, // Slight horizontal movement
-          vy: Math.random() * 2 + 2, // Falling down gently initially
-          size: 60 + Math.random() * 30,
-          emoji: type.emoji,
-          color: type.color,
-          rotation: Math.random() * Math.PI * 2,
-          rotationSpeed: (Math.random() - 0.5) * 0.2,
-          isSliced: false,
-          halves: []
-        });
-      }
+      const startTime = Date.now();
+      const duration = 12000; // 12 seconds
+
+      const spawnSlowFruit = () => {
+        const elapsed = Date.now() - startTime;
+        if (elapsed < duration) {
+          const type = FRUIT_TYPES[Math.floor(Math.random() * FRUIT_TYPES.length)];
+          fruits.push({
+            id: fruitIdCounter++,
+            x: Math.random() * canvas.width,
+            y: -50, // Start from top
+            vx: 0, // No horizontal movement for orderly fall
+            vy: 0.8, // Constant slow vertical speed
+            size: 60 + Math.random() * 20, // Larger size
+            emoji: type.emoji,
+            color: type.color,
+            rotation: 0, // No rotation for orderly fall
+            rotationSpeed: 0,
+            isSliced: false,
+            halves: []
+          });
+          
+          // Spawn interval: more frequent spawn for continuous flow
+          setTimeout(spawnSlowFruit, 400 + Math.random() * 200);
+        }
+      };
+      
+      spawnSlowFruit();
     };
     window.addEventListener('fruit-jackpot', handleJackpot);
 
@@ -147,34 +157,8 @@ export const FruitNinja: React.FC = () => {
 
       ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-      // 1. Spawn Fruits
-      if (timestamp - lastSpawnTime > SPAWN_RATE) {
-        if (Math.random() > 0.2 && canvas.height > 0) { // 80% chance to spawn
-          const isLeft = Math.random() > 0.5;
-          const type = FRUIT_TYPES[Math.floor(Math.random() * FRUIT_TYPES.length)];
-          
-          // Dynamic physics based on canvas size to ensure they always reach the middle
-          const targetHeight = canvas.height * (0.6 + Math.random() * 0.4);
-          const vy = -Math.sqrt(2 * GRAVITY * targetHeight);
-          const vx = (isLeft ? 1 : -1) * (canvas.width * 0.003 + Math.random() * 2);
-
-          fruits.push({
-            id: fruitIdCounter++,
-            x: isLeft ? -50 : canvas.width + 50,
-            y: canvas.height + 50, // Spawn slightly below canvas
-            vx: vx,
-            vy: vy,
-            size: 60 + Math.random() * 30,
-            emoji: type.emoji,
-            color: type.color,
-            rotation: Math.random() * Math.PI * 2,
-            rotationSpeed: (Math.random() - 0.5) * 0.1,
-            isSliced: false,
-            halves: []
-          });
-        }
-        lastSpawnTime = timestamp;
-      }
+      // 1. Spawn Fruits (Removed automatic spawning)
+      lastSpawnTime = timestamp;
 
       // 2. Update & Draw Blade
       const now = Date.now();
@@ -204,7 +188,8 @@ export const FruitNinja: React.FC = () => {
           // Physics
           f.x += f.vx;
           f.y += f.vy;
-          f.vy += GRAVITY;
+          // Apply gravity only if not a slow-falling fruit (or reduce gravity for them)
+          f.vy += GRAVITY * 0.2; // Reduced gravity for slow effect
           f.rotation += f.rotationSpeed;
 
           // Check Slicing
@@ -299,10 +284,10 @@ export const FruitNinja: React.FC = () => {
           continue;
         }
 
-        const opacity = 1 - (p.life / p.maxLife);
+        const opacity = 1; // Keep fully visible
         ctx.beginPath();
         ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
-        ctx.fillStyle = `${p.color}${Math.floor(opacity * 255).toString(16).padStart(2, '0')}`;
+        ctx.fillStyle = `${p.color}FF`; // Full opacity
         ctx.fill();
       }
 
