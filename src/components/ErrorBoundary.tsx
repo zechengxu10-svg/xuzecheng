@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { Card, Button } from './Neumorphic';
+import { Card, Button } from './Neumorphic.tsx';
 import { AlertCircle, RefreshCw } from 'lucide-react';
 
 interface Props {

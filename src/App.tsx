@@ -29,11 +29,11 @@ declare global {
   }
 }
 import { GoogleGenAI, Type } from "@google/genai";
-import { Card, Button, IconButton, InsetContainer, DeepInsetContainer, Modal } from './components/Neumorphic';
-import { FruitImage } from './components/FruitImage';
-import { FruitCard } from './components/FruitCard';
-import { FruitNinja } from './components/FruitNinja';
-import { PullRope } from './components/PullRope';
+import { Card, Button, IconButton, InsetContainer, DeepInsetContainer, Modal } from './components/Neumorphic.tsx';
+import { FruitImage } from './components/FruitImage.tsx';
+import { FruitCard } from './components/FruitCard.tsx';
+import { FruitNinja } from './components/FruitNinja.tsx';
+import { PullRope } from './components/PullRope.tsx';
 import { 
   auth, 
   db, 
